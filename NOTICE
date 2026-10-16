@@ -1,0 +1,46 @@
+Lenovo TB-J706F native Linux project
+=================================
+
+This is an independent board-porting project. Lenovo, Qualcomm, Android, Linux
+and other names identify hardware or upstream projects; their use does not imply
+endorsement, affiliation or a grant of trademark rights.
+
+Linux source
+------------
+
+kernel/ contains an imported upstream Linux source snapshot plus local board,
+driver and diagnostic changes. Original source commit and archive digest are
+recorded in configs/layout.json. The import tag denotes this repository's
+snapshot, rather than the original upstream Git commit object. Original source
+copyrights, SPDX identifiers, COPYING, LICENSES and license exceptions are
+retained. The source history and technical milestones identify local changes.
+
+The panel-lenovo-j706f driver acknowledges its basis in David Wronek's
+panel-raydium-rm69380 driver; its existing copyright and GPL-2.0-only notice
+remain in the source. Other per-file upstream attributions remain authoritative.
+
+Android boot-image tools
+------------------------
+
+scripts/mkbootimg.py
+  Copyright 2015, The Android Open Source Project
+scripts/unpack_bootimg.py
+  Copyright 2018, The Android Open Source Project
+scripts/gki/generate_gki_certificate.py
+  Copyright 2021, The Android Open Source Project
+
+These imported files retain Apache License, Version 2.0 headers. They are
+separate tools; this NOTICE does not change their terms or the kernel's license.
+
+Hardware research
+-----------------
+
+Board investigation compared device-supplied firmware configuration and related
+Lenovo/Qualcomm Android kernel implementation. Related source is evidence of an
+implementation, not proof that every deployed proprietary binary is identical.
+Technical milestones distinguish hypotheses from validated outcomes.
+Stock firmware, calibration and private captures are not bundled or relicensed.
+
+This NOTICE is informational. Applicable license grants and conditions are
+specified by the component's own license and copyright notices, as indexed in
+LICENSE.
