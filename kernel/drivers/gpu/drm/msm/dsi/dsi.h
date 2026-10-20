@@ -51,17 +51,22 @@ struct msm_dsi {
 int msm_dsi_manager_connector_init(struct msm_dsi *msm_dsi,
 				   struct drm_encoder *encoder);
 int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg);
-bool msm_dsi_manager_cmd_xfer_trigger(int id, u32 dma_base, u32 len);
+bool msm_dsi_manager_cmd_xfer_trigger(int id, u32 dma_base, u32 len,
+				    bool broadcast);
 int msm_dsi_manager_register(struct msm_dsi *msm_dsi);
 void msm_dsi_manager_unregister(struct msm_dsi *msm_dsi);
 void msm_dsi_manager_tpg_enable(void);
 
 /* dsi host */
 struct msm_dsi_host;
+void msm_dsi_host_cmd_xfer_lock(struct mipi_dsi_host *host);
+void msm_dsi_host_cmd_xfer_unlock(struct mipi_dsi_host *host);
 int msm_dsi_host_xfer_prepare(struct mipi_dsi_host *host,
-					const struct mipi_dsi_msg *msg);
+			     const struct mipi_dsi_msg *msg,
+			     bool broadcast, bool master);
 void msm_dsi_host_xfer_restore(struct mipi_dsi_host *host,
-					const struct mipi_dsi_msg *msg);
+			      const struct mipi_dsi_msg *msg,
+			      bool broadcast, bool master);
 int msm_dsi_host_cmd_tx(struct mipi_dsi_host *host,
 					const struct mipi_dsi_msg *msg);
 int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,

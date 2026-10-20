@@ -5,8 +5,12 @@
 
 #include "drm/drm_bridge_connector.h"
 
+#include <linux/moduleparam.h>
+#include <linux/of.h>
+
 #include "msm_kms.h"
 #include "dsi.h"
+#include "dsi_trace.h"
 
 #define DSI_CLOCK_MASTER	DSI_0
 #define DSI_CLOCK_SLAVE		DSI_1
@@ -30,9 +34,20 @@ struct msm_dsi_manager {
 
 static struct msm_dsi_manager msm_dsim_glb;
 
+static bool j706f_cmd_master0;
+module_param(j706f_cmd_master0, bool, 0444);
+MODULE_PARM_DESC(j706f_cmd_master0,
+		"Test DSI0 command-DMA master on Lenovo J706F bonded DSI");
+
 #define IS_BONDED_DSI()		(msm_dsim_glb.is_bonded_dsi)
 #define IS_SYNC_NEEDED()	(msm_dsim_glb.is_sync_needed)
 #define IS_MASTER_DSI_LINK(id)	(msm_dsim_glb.master_dsi_link_id == id)
+
+static bool dsi_mgr_use_cmd_master0(void)
+{
+	return j706f_cmd_master0 && IS_BONDED_DSI() && IS_SYNC_NEEDED() &&
+		of_machine_is_compatible("lenovo,j706f");
+}
 
 static inline struct msm_dsi *dsi_mgr_get_dsi(int id)
 {
@@ -493,57 +508,94 @@ int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg)
 	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
 	struct msm_dsi *msm_dsi0 = dsi_mgr_get_dsi(DSI_0);
 	struct mipi_dsi_host *host = msm_dsi->host;
+	struct mipi_dsi_host *other_host = msm_dsi0 ? msm_dsi0->host : NULL;
 	bool is_read = (msg->rx_buf && msg->rx_len);
 	bool need_sync = (IS_SYNC_NEEDED() && !is_read);
+	bool cmd_master0 = need_sync && dsi_mgr_use_cmd_master0();
+	int physical_id = need_sync ? (cmd_master0 ? DSI_0 : DSI_1) : id;
 	int ret;
 
 	if (!msg->tx_buf || !msg->tx_len)
 		return 0;
+	trace_msm_dsi_command(id, physical_id,
+			      "entry", msg, 0);
 
 	/* In bonded master case, panel requires the same commands sent to
 	 * both DSI links. Host issues the command trigger to both links
 	 * when DSI_1 calls the cmd transfer function, no matter it happens
 	 * before or after DSI_0 cmd transfer.
 	 */
-	if (need_sync && (id == DSI_0))
+	if (need_sync && (id == DSI_0)) {
+		trace_msm_dsi_command(id, physical_id,
+				      "skip-duplicate", msg, msg->tx_len);
 		return is_read ? msg->rx_len : msg->tx_len;
+	}
 
-	if (need_sync && msm_dsi0) {
-		ret = msm_dsi_host_xfer_prepare(msm_dsi0->host, msg);
+	if (cmd_master0) {
+		if (!other_host) {
+			trace_msm_dsi_command(id, DSI_0, "return", msg, -ENODEV);
+			return -ENODEV;
+		}
+		/* The caller holds DSI1's cmd_mutex; nest DSI0 only here. */
+		msm_dsi_host_cmd_xfer_lock(other_host);
+		other_host = host;
+		host = msm_dsi0->host;
+	}
+
+	if (need_sync && other_host) {
+		ret = msm_dsi_host_xfer_prepare(other_host, msg, true, false);
 		if (ret) {
 			pr_err("%s: failed to prepare non-trigger host, %d\n",
 				__func__, ret);
-			return ret;
+			goto unlock_host0;
 		}
 	}
-	ret = msm_dsi_host_xfer_prepare(host, msg);
+	ret = msm_dsi_host_xfer_prepare(host, msg, need_sync, need_sync);
 	if (ret) {
 		pr_err("%s: failed to prepare host, %d\n", __func__, ret);
-		goto restore_host0;
+		goto restore_other_host;
 	}
 
 	ret = is_read ? msm_dsi_host_cmd_rx(host, msg) :
 			msm_dsi_host_cmd_tx(host, msg);
 
-	msm_dsi_host_xfer_restore(host, msg);
+	msm_dsi_host_xfer_restore(host, msg, need_sync, need_sync);
 
-restore_host0:
-	if (need_sync && msm_dsi0)
-		msm_dsi_host_xfer_restore(msm_dsi0->host, msg);
+restore_other_host:
+	if (need_sync && other_host)
+		msm_dsi_host_xfer_restore(other_host, msg, true, false);
+
+unlock_host0:
+	if (cmd_master0)
+		msm_dsi_host_cmd_xfer_unlock(host);
+	trace_msm_dsi_command(id, physical_id,
+			      "return", msg, ret);
 
 	return ret;
 }
 
-bool msm_dsi_manager_cmd_xfer_trigger(int id, u32 dma_base, u32 len)
+bool msm_dsi_manager_cmd_xfer_trigger(int id, u32 dma_base, u32 len,
+				    bool broadcast)
 {
 	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
 	struct msm_dsi *msm_dsi0 = dsi_mgr_get_dsi(DSI_0);
 	struct mipi_dsi_host *host = msm_dsi->host;
 
-	if (IS_SYNC_NEEDED() && (id == DSI_0))
+	if (broadcast && dsi_mgr_use_cmd_master0()) {
+		struct msm_dsi *msm_dsi1 = dsi_mgr_get_dsi(DSI_1);
+
+		if (id != DSI_0 || !msm_dsi1)
+			return false;
+
+		msm_dsi_host_cmd_xfer_commit(msm_dsi1->host, dma_base, len);
+		msm_dsi_host_cmd_xfer_commit(host, dma_base, len);
+		return true;
+	}
+
+	if (broadcast && IS_SYNC_NEEDED() && (id == DSI_0))
 		return false;
 
-	if (IS_SYNC_NEEDED() && msm_dsi0)
+	if (broadcast && IS_SYNC_NEEDED() && msm_dsi0)
 		msm_dsi_host_cmd_xfer_commit(msm_dsi0->host, dma_base, len);
 
 	msm_dsi_host_cmd_xfer_commit(host, dma_base, len);

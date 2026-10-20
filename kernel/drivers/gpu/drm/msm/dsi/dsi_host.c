@@ -32,6 +32,9 @@
 #include "msm_gem.h"
 #include "phy/dsi_phy.h"
 
+#define CREATE_TRACE_POINTS
+#include "dsi_trace.h"
+
 #define DSI_RESET_TOGGLE_DELAY_MS 20
 
 static int dsi_populate_dsc_params(struct msm_dsi_host *msm_host, struct drm_dsc_config *dsc);
@@ -144,6 +147,7 @@ struct msm_dsi_host {
 	struct completion video_comp;
 	struct mutex dev_mutex;
 	struct mutex cmd_mutex;
+	bool xfer_broadcast;
 	spinlock_t intr_lock; /* Protect interrupt ctrl register */
 
 	u32 err_work_state;
@@ -181,6 +185,7 @@ struct msm_dsi_host {
 	bool cphy_mode;
 
 	u32 dma_cmd_ctrl_restore;
+	u32 dma_broadcast_ctrl_restore;
 
 	bool registered;
 	bool power_on;
@@ -196,6 +201,21 @@ static inline u32 dsi_read(struct msm_dsi_host *msm_host, u32 reg)
 static inline void dsi_write(struct msm_dsi_host *msm_host, u32 reg, u32 data)
 {
 	writel(data, msm_host->ctrl_base + reg);
+}
+
+/* Call only between successful transfer clock acquisition and release. */
+static void dsi_trace_xfer_state(struct msm_dsi_host *msm_host,
+				 const char *phase, int result)
+{
+	if (!trace_msm_dsi_state_enabled() || !READ_ONCE(msm_host->power_on))
+		return;
+
+	trace_msm_dsi_state(msm_host->id, phase,
+			    dsi_read(msm_host, REG_DSI_CTRL),
+			    dsi_read(msm_host, REG_DSI_STATUS0),
+			    dsi_read(msm_host, REG_DSI_CLK_STATUS),
+			    dsi_read(msm_host, REG_DSI_TRIG_CTRL),
+			    dsi_read(msm_host, REG_DSI_CMD_DMA_CTRL), result);
 }
 
 static const struct msm_dsi_cfg_handler *
@@ -382,6 +402,16 @@ int msm_dsi_runtime_resume(struct device *dev)
 int dsi_link_clk_set_rate_6g(struct msm_dsi_host *msm_host)
 {
 	int ret;
+
+	/*
+	 * Power-on establishes the mode rates before setting power_on. Active
+	 * command transfers only need another enable reference, not new rates.
+	 * PLL fractional rounding can make the reported rate differ slightly
+	 * from the request, so repeating it can reprogram a shared live PLL.
+	 * Mode changes run power-on again with power_on clear.
+	 */
+	if (READ_ONCE(msm_host->power_on))
+		return 0;
 
 	DBG("Set clk rates: pclk=%lu, byteclk=%lu",
 	    msm_host->pixel_clk_rate, msm_host->byte_clk_rate);
@@ -1453,7 +1483,7 @@ static int dsi_cmd_dma_tx(struct msm_dsi_host *msm_host, int len)
 	dsi_wait4video_eng_busy(msm_host);
 
 	triggered = msm_dsi_manager_cmd_xfer_trigger(
-						msm_host->id, dma_base, len);
+			msm_host->id, dma_base, len, msm_host->xfer_broadcast);
 	if (triggered) {
 		ret = wait_for_completion_timeout(&msm_host->dma_comp,
 					msecs_to_jiffies(200));
@@ -1466,6 +1496,7 @@ static int dsi_cmd_dma_tx(struct msm_dsi_host *msm_host, int len)
 		ret = len;
 	}
 
+	dsi_trace_xfer_state(msm_host, "completion", ret);
 	return ret;
 }
 
@@ -1600,6 +1631,8 @@ static void dsi_timeout_status(struct msm_dsi_host *msm_host)
 	status = dsi_read(msm_host, REG_DSI_TIMEOUT_STATUS);
 
 	if (status) {
+		trace_msm_dsi_error(msm_host->id, 0, status);
+		dev_err_ratelimited(&msm_host->pdev->dev, "J706F DSI%d timeout=%#x ctrl=%#x trig=%#x\n", msm_host->id, status, dsi_read(msm_host, REG_DSI_CTRL), dsi_read(msm_host, REG_DSI_TRIG_CTRL));
 		dsi_write(msm_host, REG_DSI_TIMEOUT_STATUS, status);
 		msm_host->err_work_state |= DSI_ERR_STATE_TIMEOUT;
 	}
@@ -1626,6 +1659,10 @@ static void dsi_fifo_status(struct msm_dsi_host *msm_host)
 	u32 status;
 
 	status = dsi_read(msm_host, REG_DSI_FIFO_STATUS);
+	if (status)
+		trace_msm_dsi_error(msm_host->id, status, 0);
+	if (status)
+		dev_err_ratelimited(&msm_host->pdev->dev, "J706F DSI%d fifo=%#x\n", msm_host->id, status);
 
 	/* fifo underflow, overflow */
 	if (status) {
@@ -2153,11 +2190,29 @@ void msm_dsi_host_unregister(struct mipi_dsi_host *host)
 	}
 }
 
+void msm_dsi_host_cmd_xfer_lock(struct mipi_dsi_host *host)
+{
+	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+
+	/* Bonded command routing holds DSI1 before nesting DSI0. */
+	mutex_lock_nested(&msm_host->cmd_mutex, SINGLE_DEPTH_NESTING);
+}
+
+void msm_dsi_host_cmd_xfer_unlock(struct mipi_dsi_host *host)
+{
+	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+
+	mutex_unlock(&msm_host->cmd_mutex);
+}
+
 int msm_dsi_host_xfer_prepare(struct mipi_dsi_host *host,
-				const struct mipi_dsi_msg *msg)
+			     const struct mipi_dsi_msg *msg,
+			     bool broadcast, bool master)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
 	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
+	u32 data;
+	int ret;
 
 	/* TODO: make sure dsi_cmd_mdp is idle.
 	 * Since DSI6G v1.2.0, we can set DSI_TRIG_CTRL.BLOCK_DMA_WITHIN_FRAME
@@ -2169,11 +2224,29 @@ int msm_dsi_host_xfer_prepare(struct mipi_dsi_host *host,
 	 * mdss interrupt is generated in mdp core clock domain
 	 * mdp clock need to be enabled to receive dsi interrupt
 	 */
-	pm_runtime_get_sync(&msm_host->pdev->dev);
-	cfg_hnd->ops->link_clk_set_rate(msm_host);
-	cfg_hnd->ops->link_clk_enable(msm_host);
+	ret = pm_runtime_resume_and_get(&msm_host->pdev->dev);
+	if (ret < 0)
+		return ret;
+
+	ret = cfg_hnd->ops->link_clk_set_rate(msm_host);
+	if (ret)
+		goto put_runtime;
+
+	ret = cfg_hnd->ops->link_clk_enable(msm_host);
+	if (ret)
+		goto put_runtime;
 
 	/* TODO: vote for bus bandwidth */
+
+	if (broadcast && of_machine_is_compatible("lenovo,j706f")) {
+		data = dsi_read(msm_host, REG_DSI_CMD_DMA_CTRL);
+		msm_host->dma_broadcast_ctrl_restore = data;
+		data &= ~DSI_CMD_DMA_CTRL_BROADCAST_MASTER;
+		data |= DSI_CMD_DMA_CTRL_BROADCAST_EN;
+		if (master)
+			data |= DSI_CMD_DMA_CTRL_BROADCAST_MASTER;
+		dsi_write(msm_host, REG_DSI_CMD_DMA_CTRL, data);
+	}
 
 	if (!(msg->flags & MIPI_DSI_MSG_USE_LPM))
 		dsi_set_tx_power_mode(0, msm_host);
@@ -2184,21 +2257,44 @@ int msm_dsi_host_xfer_prepare(struct mipi_dsi_host *host,
 		DSI_CTRL_CMD_MODE_EN |
 		DSI_CTRL_ENABLE);
 	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_CMD_DMA_DONE, 1);
+	/* Only the transfer owner uses this host's TX buffer/completion. */
+	if (!broadcast || master)
+		msm_host->xfer_broadcast = broadcast;
+	dsi_trace_xfer_state(msm_host, "prepare", 0);
 
 	return 0;
+
+put_runtime:
+	/* link_clk_enable unwinds any clocks it enabled before failing. */
+	pm_runtime_put(&msm_host->pdev->dev);
+	return ret;
 }
 
 void msm_dsi_host_xfer_restore(struct mipi_dsi_host *host,
-				const struct mipi_dsi_msg *msg)
+			      const struct mipi_dsi_msg *msg,
+			      bool broadcast, bool master)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
 	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
+	u32 mask = DSI_CMD_DMA_CTRL_BROADCAST_EN |
+		   DSI_CMD_DMA_CTRL_BROADCAST_MASTER;
+	u32 data;
 
+	dsi_trace_xfer_state(msm_host, "restore", 0);
+	if (!broadcast || master)
+		msm_host->xfer_broadcast = false;
 	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_CMD_DMA_DONE, 0);
 	dsi_write(msm_host, REG_DSI_CTRL, msm_host->dma_cmd_ctrl_restore);
 
 	if (!(msg->flags & MIPI_DSI_MSG_USE_LPM))
 		dsi_set_tx_power_mode(1, msm_host);
+
+	if (broadcast && of_machine_is_compatible("lenovo,j706f")) {
+		data = dsi_read(msm_host, REG_DSI_CMD_DMA_CTRL);
+		data &= ~mask;
+		data |= msm_host->dma_broadcast_ctrl_restore & mask;
+		dsi_write(msm_host, REG_DSI_CMD_DMA_CTRL, data);
+	}
 
 	/* TODO: unvote for bus bandwidth */
 
@@ -2356,13 +2452,25 @@ void msm_dsi_host_cmd_xfer_commit(struct mipi_dsi_host *host, u32 dma_base,
 				  u32 len)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+	u32 data;
+
+	if (msm_host->cfg_hnd->major == MSM_DSI_VER_MAJOR_6G &&
+	    of_machine_is_compatible("lenovo,j706f")) {
+		/* J706F memory-command DMA setup; leave other 6G hosts alone. */
+		data = dsi_read(msm_host, REG_DSI_DMA_FIFO_CTRL);
+		data |= DSI_DMA_FIFO_CTRL_DISABLE_RD_WATERMARK |
+			DSI_DMA_FIFO_CTRL_DISABLE_WR_WATERMARK;
+		dsi_write(msm_host, REG_DSI_DMA_FIFO_CTRL, data);
+	}
 
 	dsi_write(msm_host, REG_DSI_DMA_BASE, dma_base);
 	dsi_write(msm_host, REG_DSI_DMA_LEN, len);
+	dsi_trace_xfer_state(msm_host, "before-trigger", 0);
 	dsi_write(msm_host, REG_DSI_TRIG_DMA, 1);
 
 	/* Make sure trigger happens */
 	wmb();
+	dsi_trace_xfer_state(msm_host, "after-trigger", 0);
 }
 
 void msm_dsi_host_set_phy_mode(struct mipi_dsi_host *host,

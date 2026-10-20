@@ -188,6 +188,7 @@ xsi:schemaLocation="https://gitlab.freedesktop.org/freedreno/ rules-fd.xsd">
 
 	<reg32 offset="0x00038" name="CMD_DMA_CTRL">
 		<bitfield name="BROADCAST_EN" pos="31" type="boolean"/>
+		<bitfield name="BROADCAST_MASTER" pos="30" type="boolean"/>
 		<bitfield name="FROM_FRAME_BUFFER" pos="28" type="boolean"/>
 		<bitfield name="LOW_POWER" pos="26" type="boolean"/>
 	</reg32>
@@ -206,6 +207,10 @@ xsi:schemaLocation="https://gitlab.freedesktop.org/freedreno/ rules-fd.xsd">
 	</reg32>
 	<reg32 offset="0x00044" name="DMA_BASE"/>
 	<reg32 offset="0x00048" name="DMA_LEN"/>
+	<reg32 offset="0x0004c" name="DMA_FIFO_CTRL">
+		<bitfield name="DISABLE_RD_WATERMARK" pos="16" type="boolean"/>
+		<bitfield name="DISABLE_WR_WATERMARK" pos="20" type="boolean"/>
+	</reg32>
 	<reg32 offset="0x00054" name="CMD_MDP_STREAM0_CTRL">
 		<bitfield name="DATA_TYPE" low="0" high="5" type="uint"/>
 		<bitfield name="VIRTUAL_CHANNEL" low="8" high="9" type="uint"/>
