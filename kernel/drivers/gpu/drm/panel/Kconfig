@@ -1384,3 +1384,9 @@ config DRM_PANEL_XINPENG_XPP055C272
 	  XPP055C272 controller for 720x1280 LCD panels with MIPI/RGB/SPI
 	  system interfaces.
 endmenu
+
+config DRM_PANEL_LENOVO_J706F
+	tristate "Lenovo TB-J706F RM692E6 dual-DSI OLED panel"
+	depends on GPIOLIB && OF && DRM_MIPI_DSI && BACKLIGHT_CLASS_DEVICE
+	help
+	  Command-mode panel support using the TB-J706F stock startup packets.
