@@ -1443,3 +1443,10 @@ config TOUCHSCREEN_HIMAX_HX83112B
 	  module will be called himax_hx83112b.
 
 endif
+
+config TOUCHSCREEN_GOODIX_GT738X
+ tristate "Goodix GT738x Phoenix touchscreen bring-up"
+ depends on I2C
+ select REGMAP_I2C
+ help
+   Initial resident-firmware finger-input support for Lenovo TB-J706F.
