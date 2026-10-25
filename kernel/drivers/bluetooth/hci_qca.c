@@ -2025,6 +2025,15 @@ retry:
 			goto out;
 	}
 
+	/* Lenovo TB-J706F stock WCN3998 ROM 0x1001 advertises this command,
+	 * but returns a one-byte Unknown Command response instead of power data.
+	 * Keep the standard HCI initialization path from querying it.
+	 */
+	if (soc_type == QCA_WCN3998 &&
+	    of_machine_is_compatible("lenovo,j706f") &&
+	    le16_to_cpu(ver.rom_ver) == 0x1001)
+		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_READ_TRANSMIT_POWER);
+
 	/* Setup patch / NVM configurations */
 	ret = qca_uart_setup(hdev, qca_baudrate, soc_type, ver,
 			firmware_name, rampatch_name);
