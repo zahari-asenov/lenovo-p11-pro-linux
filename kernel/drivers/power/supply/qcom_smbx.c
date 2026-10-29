@@ -23,6 +23,8 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
+#include "qcom_smbx_j706f.h"
+
 enum smb_generation {
 	SMB2,
 	SMB5,
@@ -81,10 +83,13 @@ enum smb_generation {
 #define OTG_EN_SRC_CFG_BIT				BIT(1)
 
 #define APSD_STATUS					0x307
+#define APSD_HVDCP_TIMEOUT_BIT				BIT(6)
 #define APSD_DTC_STATUS_DONE_BIT			BIT(0)
 
 #define APSD_RESULT_STATUS				0x308
 #define APSD_RESULT_STATUS_MASK				GENMASK(6, 0)
+#define QC_3P0_BIT					BIT(6)
+#define QC_2P0_BIT					BIT(5)
 #define FLOAT_CHARGER_BIT				BIT(4)
 #define DCP_CHARGER_BIT					BIT(3)
 #define CDP_CHARGER_BIT					BIT(2)
@@ -100,6 +105,14 @@ enum smb_generation {
 #define CMD_ICL_OVERRIDE				0x342
 #define ICL_OVERRIDE_BIT				BIT(0)
 
+#define CMD_HVDCP_2					0x343
+#define FORCE_5V_BIT					BIT(3)
+#define ADAPTER_ALLOW_OVERRIDE				0x344
+#define ADAPTER_ALLOW_MASK				GENMASK(3, 0)
+#define ADAPTER_ALLOW_5V					BIT(0)
+#define HVDCP_PULSE_COUNT_MAX				0x35b
+#define QC2_MAX_VOLTAGE_MASK				GENMASK(7, 6)
+
 #define TYPE_C_CFG					0x358
 #define APSD_START_ON_CC_BIT				BIT(7)
 #define FACTORY_MODE_DETECTION_EN_BIT			BIT(5)
@@ -107,9 +120,11 @@ enum smb_generation {
 
 #define USBIN_OPTIONS_1_CFG				0x362
 #define AUTO_SRC_DETECT_BIT				BIT(3)
+#define HVDCP_AUTH_EN_BIT					BIT(6)
+#define HVDCP_AUTONOMOUS_BIT				BIT(5)
 #define HVDCP_EN_BIT					BIT(2)
 
-#define USBIN_LOAD_CFG					0x65
+#define USBIN_LOAD_CFG					0x365
 #define ICL_OVERRIDE_AFTER_APSD_BIT			BIT(4)
 
 #define USBIN_ICL_OPTIONS				0x366
@@ -248,6 +263,14 @@ struct smb_chip {
 	unsigned int current_step_size_ua;
 	unsigned int current_limit_max_ua;
 
+	struct delayed_work temperature_work;
+	struct power_supply *temperature_supply;
+	bool qc_detect_5v;
+	atomic_t qc_cable_event;
+	unsigned int qc_stage;
+	unsigned int qc_polls;
+	bool fast_temperature;
+	int temperature_current_ua;
 	struct delayed_work status_change_work;
 	int cable_irq;
 	bool wakeup_enabled;
@@ -270,6 +293,8 @@ struct smb_match_data {
 static enum power_supply_property smb_properties[] = {
 	POWER_SUPPLY_PROP_MANUFACTURER,
 	POWER_SUPPLY_PROP_MODEL_NAME,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
+	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
 	POWER_SUPPLY_PROP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
@@ -341,7 +366,8 @@ static int smb_apsd_get_charger_type(struct smb_chip *chip, int *val)
 
 	if (stat & CDP_CHARGER_BIT)
 		*val = POWER_SUPPLY_USB_TYPE_CDP;
-	else if (stat & (DCP_CHARGER_BIT | OCP_CHARGER_BIT | FLOAT_CHARGER_BIT))
+	else if (stat & (DCP_CHARGER_BIT | OCP_CHARGER_BIT | FLOAT_CHARGER_BIT |
+			 QC_2P0_BIT | QC_3P0_BIT))
 		*val = POWER_SUPPLY_USB_TYPE_DCP;
 	else /* SDP_CHARGER_BIT (or others) */
 		*val = POWER_SUPPLY_USB_TYPE_SDP;
@@ -493,6 +519,7 @@ static inline int smb_get_current_now(struct smb_chip *chip,
 static int smb_set_current_limit(struct smb_chip *chip, unsigned int val)
 {
 	unsigned char val_raw;
+	int rc;
 
 	if (val > chip->current_limit_max_ua) {
 		dev_err(chip->dev,
@@ -501,8 +528,91 @@ static int smb_set_current_limit(struct smb_chip *chip, unsigned int val)
 	}
 	val_raw = val / chip->current_step_size_ua;
 
-	return regmap_write(chip->regmap, chip->base + USBIN_CURRENT_LIMIT_CFG,
-			    val_raw);
+	rc = regmap_write(chip->regmap, chip->base + USBIN_CURRENT_LIMIT_CFG,
+			  val_raw);
+	if (rc || chip->gen != SMB5 || !chip->temperature_supply)
+		return rc;
+
+	/* Lenovo SMB5 SW_OVERRIDE_HC_MODE: keep AICL, select the software cap. */
+	rc = regmap_update_bits(chip->regmap, chip->base + USBIN_ICL_OPTIONS,
+				USBIN_MODE_CHG_BIT, USBIN_MODE_CHG_BIT);
+	if (rc)
+		return rc;
+	rc = regmap_update_bits(chip->regmap, chip->base + CMD_ICL_OVERRIDE,
+				ICL_OVERRIDE_BIT, ICL_OVERRIDE_BIT);
+	if (rc)
+		return rc;
+	return regmap_update_bits(chip->regmap, chip->base + USBIN_LOAD_CFG,
+				  ICL_OVERRIDE_AFTER_APSD_BIT,
+				  ICL_OVERRIDE_AFTER_APSD_BIT);
+}
+
+/* Discover QC support without allowing a voltage increase or pump enable. */
+static int smb_qc_detect_5v(struct smb_chip *chip)
+{
+	unsigned int result, status;
+	int rc;
+
+	rc = regmap_read(chip->regmap, chip->base + APSD_RESULT_STATUS, &result);
+	if (rc)
+		return rc;
+	if (!chip->qc_stage) {
+		/* Android treats OCP as DCP; FLOAT and data ports stay excluded. */
+		if (!(result & (DCP_CHARGER_BIT | OCP_CHARGER_BIT |
+			 QC_2P0_BIT | QC_3P0_BIT)) ||
+		    result & (SDP_CHARGER_BIT | CDP_CHARGER_BIT)) {
+			chip->qc_stage = 2;
+			return 0;
+		}
+		rc = smb_set_current_limit(chip, 1000000);
+		if (rc)
+			return rc;
+		/* Establish all 5V bounds before enabling the detector. */
+		rc = regmap_update_bits(chip->regmap,
+					chip->base + USBIN_OPTIONS_1_CFG,
+					HVDCP_AUTONOMOUS_BIT | HVDCP_AUTH_EN_BIT |
+					HVDCP_EN_BIT, 0);
+		if (rc)
+			return rc;
+		rc = regmap_update_bits(chip->regmap,
+					chip->base + ADAPTER_ALLOW_OVERRIDE,
+					ADAPTER_ALLOW_MASK, ADAPTER_ALLOW_5V);
+		if (rc)
+			return rc;
+		rc = regmap_update_bits(chip->regmap,
+					chip->base + HVDCP_PULSE_COUNT_MAX,
+					QC2_MAX_VOLTAGE_MASK, 0);
+		if (rc)
+			return rc;
+		rc = regmap_write(chip->regmap, chip->base + CMD_HVDCP_2, FORCE_5V_BIT);
+		if (rc)
+			return rc;
+		rc = regmap_update_bits(chip->regmap,
+					chip->base + USBIN_OPTIONS_1_CFG,
+					HVDCP_AUTONOMOUS_BIT | HVDCP_AUTH_EN_BIT |
+					HVDCP_EN_BIT, HVDCP_AUTH_EN_BIT | HVDCP_EN_BIT);
+		if (rc)
+			return rc;
+		rc = regmap_update_bits(chip->regmap, chip->base + CMD_APSD,
+					APSD_RERUN_BIT, APSD_RERUN_BIT);
+		if (rc)
+			return rc;
+		chip->qc_stage = 1;
+		chip->qc_polls = 0;
+		dev_info(chip->dev, "QC detection started: 5V-only, 1A input cap\n");
+		return 1;
+	}
+
+	rc = regmap_read(chip->regmap, chip->base + APSD_STATUS, &status);
+	if (rc)
+		return rc;
+	if (!(result & (QC_2P0_BIT | QC_3P0_BIT)) &&
+	    !(status & APSD_HVDCP_TIMEOUT_BIT) && ++chip->qc_polls < 15)
+		return 1;
+	chip->qc_stage = 2;
+	dev_info(chip->dev, "QC detection complete: APSD=%02x result=%02x (5V-only)\n",
+		 status, result);
+	return 0;
 }
 
 static void smb_status_change_work(struct work_struct *work)
@@ -514,9 +624,21 @@ static void smb_status_change_work(struct work_struct *work)
 
 	chip = container_of(work, struct smb_chip, status_change_work.work);
 
+	if (atomic_xchg(&chip->qc_cable_event, 0)) {
+		chip->qc_stage = 0;
+		chip->qc_polls = 0;
+	}
 	smb_get_prop_usb_online(chip, &usb_online);
 	if (!usb_online)
 		return;
+
+	if (chip->qc_detect_5v && chip->qc_stage == 1) {
+		rc = smb_qc_detect_5v(chip);
+		if (rc > 0)
+			goto qc_wait;
+		if (rc < 0)
+			goto qc_error;
+	}
 
 	for (count = 0; count < 3; count++) {
 		dev_dbg(chip->dev, "get charger type retry %d\n", count);
@@ -540,6 +662,15 @@ static void smb_status_change_work(struct work_struct *work)
 		return;
 	}
 
+	if (chip->qc_detect_5v && !chip->qc_stage &&
+	    charger_type == POWER_SUPPLY_USB_TYPE_DCP) {
+		rc = smb_qc_detect_5v(chip);
+		if (rc > 0)
+			goto qc_wait;
+		if (rc < 0)
+			goto qc_error;
+	}
+
 	switch (charger_type) {
 	case POWER_SUPPLY_USB_TYPE_CDP:
 		current_ua = CDP_CURRENT_UA;
@@ -553,8 +684,18 @@ static void smb_status_change_work(struct work_struct *work)
 		break;
 	}
 
-	smb_set_current_limit(chip, current_ua);
+	rc = smb_set_current_limit(chip, current_ua);
+	if (rc)
+		dev_err(chip->dev, "Cannot set input-current cap: %d\n", rc);
 	power_supply_changed(chip->chg_psy);
+	return;
+qc_error:
+	chip->qc_stage = 2;
+	dev_err(chip->dev, "5V QC discovery failed: %d\n", rc);
+	regmap_update_bits(chip->regmap, chip->base + USBIN_OPTIONS_1_CFG,
+			   HVDCP_AUTH_EN_BIT | HVDCP_EN_BIT | HVDCP_AUTONOMOUS_BIT, 0);
+qc_wait:
+	schedule_delayed_work(&chip->status_change_work, msecs_to_jiffies(1000));
 }
 
 static int smb_get_iio_chan(struct smb_chip *chip, struct iio_channel *chan,
@@ -656,6 +797,69 @@ static int smb_get_prop_health(struct smb_chip *chip, int *val)
 	return -EINVAL;
 }
 
+/* Opt-in J706F policy: the external gauge is the battery temperature source. */
+static void smb_temperature_work(struct work_struct *work)
+{
+	struct smb_chip *chip = container_of(work, struct smb_chip,
+					    temperature_work.work);
+	union power_supply_propval temp = {}, health = {};
+	struct j706f_charge_limit limit;
+	int rc, health_rc;
+
+	rc = power_supply_get_property(chip->temperature_supply,
+				       POWER_SUPPLY_PROP_TEMP, &temp);
+	health_rc = power_supply_get_property(chip->temperature_supply,
+					      POWER_SUPPLY_PROP_HEALTH, &health);
+	/*
+	 * The J706F BQ27541 gauge maps SOC1/SOCF (low charge) to DEAD.
+	 * Rejecting that status prevents an empty battery from recharging.
+	 * Retain read-error, temperature and other health-fault rejection.
+	 */
+	limit = j706f_charge_limit(temp.intval, !rc && !health_rc &&
+				  (health.intval == POWER_SUPPLY_HEALTH_GOOD ||
+				   health.intval == POWER_SUPPLY_HEALTH_DEAD),
+				  chip->fast_temperature);
+	chip->fast_temperature = limit.current_ua > 500000;
+	if (chip->temperature_current_ua == limit.current_ua)
+		goto reschedule;
+
+	/* Disable first, so a partial update cannot leave an unsafe old limit. */
+	rc = regmap_update_bits(chip->regmap, chip->base + CHARGING_ENABLE_CMD,
+				CHARGING_ENABLE_CMD_BIT, 0);
+	if (rc)
+		goto error;
+	rc = regmap_write(chip->regmap, chip->base + FAST_CHARGE_CURRENT_CFG,
+			  limit.current_ua / chip->current_step_size_ua);
+	if (rc)
+		goto error;
+	rc = regmap_update_bits(chip->regmap, chip->base + FLOAT_VOLTAGE_CFG,
+				FLOAT_VOLTAGE_SETTING_MASK,
+				(limit.voltage_uv - 3600000) / 10000);
+	if (rc)
+		goto error;
+	if (limit.current_ua) {
+		rc = regmap_update_bits(chip->regmap,
+					chip->base + CHARGING_ENABLE_CMD,
+					CHARGING_ENABLE_CMD_BIT,
+					CHARGING_ENABLE_CMD_BIT);
+		if (rc)
+			goto error;
+	}
+	if (chip->temperature_current_ua != limit.current_ua) {
+		dev_info(chip->dev, "battery temperature %d: charge limit %duA/%duV\n",
+			 temp.intval, limit.current_ua, limit.voltage_uv);
+		chip->temperature_current_ua = limit.current_ua;
+		power_supply_changed(chip->chg_psy);
+	}
+	goto reschedule;
+error:
+	chip->temperature_current_ua = -1;
+	chip->fast_temperature = false;
+	dev_err_ratelimited(chip->dev, "Temperature policy update failed: %d\n", rc);
+reschedule:
+	schedule_delayed_work(&chip->temperature_work, msecs_to_jiffies(5000));
+}
+
 static int smb_get_property(struct power_supply *psy,
 			     enum power_supply_property psp,
 			     union power_supply_propval *val)
@@ -670,6 +874,18 @@ static int smb_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_MODEL_NAME:
 		val->strval = chip->name;
 		return 0;
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		ret = regmap_read(chip->regmap,
+				  chip->base + USBIN_CURRENT_LIMIT_CFG, &val->intval);
+		if (!ret)
+			val->intval *= chip->current_step_size_ua;
+		return ret;
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
+		ret = regmap_read(chip->regmap,
+				  chip->base + FAST_CHARGE_CURRENT_CFG, &val->intval);
+		if (!ret)
+			val->intval *= chip->current_step_size_ua;
+		return ret;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		return smb_get_current_limit(chip, &val->intval);
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
@@ -677,10 +893,7 @@ static int smb_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		ret = smb_get_iio_chan(chip, chip->usb_in_v_chan,
 					 &val->intval);
-		if (!ret) {
-			if (chip->gen == SMB5)
-				val->intval *= 16;
-		}
+		/* ADC5_USB_IN_V_16 already applies its 1:16 prescaler. */
 		return ret;
 	case POWER_SUPPLY_PROP_ONLINE:
 		return smb_get_prop_usb_online(chip, &val->intval);
@@ -742,6 +955,8 @@ static irqreturn_t smb_handle_batt_overvoltage(int irq, void *data)
 static irqreturn_t smb_handle_usb_plugin(int irq, void *data)
 {
 	struct smb_chip *chip = data;
+
+	atomic_set(&chip->qc_cable_event, 1);
 
 	power_supply_changed(chip->chg_psy);
 
@@ -1051,6 +1266,9 @@ static int smb_probe(struct platform_device *pdev)
 
 	chip->dev = &pdev->dev;
 	chip->name = pdev->name;
+	chip->temperature_current_ua = -1;
+	atomic_set(&chip->qc_cable_event, 0);
+	chip->qc_detect_5v = device_property_read_bool(chip->dev, "lenovo,qc-detect-5v");
 
 	chip->regmap = dev_get_regmap(pdev->dev.parent, NULL);
 	if (!chip->regmap)
@@ -1080,6 +1298,21 @@ static int smb_probe(struct platform_device *pdev)
 	chip->current_limit_max_ua = match_data->current_limit_max_ua;
 
 	dev_info(chip->dev, "Generation %s\n", chip->gen == SMB2 ? "SMB2" : "SMB5");
+
+	if (device_property_present(chip->dev, "lenovo,battery-temperature-supply")) {
+		if (chip->gen != SMB5)
+			return -EINVAL;
+		chip->temperature_supply = devm_power_supply_get_by_reference(
+			chip->dev, "lenovo,battery-temperature-supply");
+		if (IS_ERR(chip->temperature_supply))
+			return dev_err_probe(chip->dev, PTR_ERR(chip->temperature_supply),
+					     "Cannot obtain battery temperature supply\n");
+		if (!chip->temperature_supply)
+			return -EPROBE_DEFER;
+	}
+
+	if (chip->qc_detect_5v && (chip->gen != SMB5 || !chip->temperature_supply))
+		return -EINVAL;
 
 	rc = smb_init_hw(chip, match_data->init_seq, match_data->init_seq_len);
 	if (rc < 0)
@@ -1117,7 +1350,15 @@ static int smb_probe(struct platform_device *pdev)
 		return dev_err_probe(chip->dev, rc,
 				     "Failed to init status change work\n");
 
-	rc = (chip->batt_info->voltage_max_design_uv - 3487500) / 7500 + 1;
+	/* SMB5 uses the vendor 3.6 V / 10 mV encoding, unlike SMB2. */
+	if (chip->gen == SMB5) {
+		if (chip->batt_info->voltage_max_design_uv < 3600000 ||
+		    chip->batt_info->voltage_max_design_uv > 4790000)
+			return dev_err_probe(chip->dev, -EINVAL, "Invalid SMB5 float voltage\n");
+		rc = (chip->batt_info->voltage_max_design_uv - 3600000) / 10000;
+	} else {
+		rc = (chip->batt_info->voltage_max_design_uv - 3487500) / 7500 + 1;
+	}
 	rc = regmap_update_bits(chip->regmap, chip->base + FLOAT_VOLTAGE_CFG,
 				FLOAT_VOLTAGE_SETTING_MASK, rc);
 	if (rc < 0)
@@ -1157,7 +1398,9 @@ static int smb_probe(struct platform_device *pdev)
 	 * reporting.
 	 */
 	rc = regmap_write(chip->regmap, chip->base + FAST_CHARGE_CURRENT_CFG,
-			  1950000 / chip->current_step_size_ua);
+			  min(chip->temperature_supply ? 500000 : 1950000,
+			      chip->batt_info->constant_charge_current_max_ua) /
+			  chip->current_step_size_ua);
 	if (rc < 0)
 		return dev_err_probe(chip->dev, rc,
 				     "Couldn't write fast charge current cfg");
@@ -1168,11 +1411,89 @@ static int smb_probe(struct platform_device *pdev)
 		return dev_err_probe(chip->dev, rc,
 				     "Couldn't write fast AICL rerun time");
 
+	if (chip->temperature_supply) {
+		/* This opt-in board policy must never exceed the declared battery. */
+		if (chip->batt_info->constant_charge_current_max_ua < 1950000 ||
+		    chip->batt_info->voltage_max_design_uv < 4400000)
+			return -EINVAL;
+		rc = devm_delayed_work_autocancel(chip->dev, &chip->temperature_work,
+						  smb_temperature_work);
+		if (rc)
+			return rc;
+		schedule_delayed_work(&chip->temperature_work, 0);
+	}
+
 	/* Initialise charger state */
 	schedule_delayed_work(&chip->status_change_work, 0);
 
 	return 0;
 }
+
+/* Do not leave elevated charging active when temperature polling stops. */
+static int smb_temperature_pause(struct device *dev)
+{
+	struct smb_chip *chip = dev_get_drvdata(dev);
+	int rc;
+
+	if (!chip->temperature_supply)
+		return 0;
+	cancel_delayed_work_sync(&chip->temperature_work);
+	chip->temperature_current_ua = -1;
+	chip->fast_temperature = false;
+	rc = regmap_update_bits(chip->regmap, chip->base + CHARGING_ENABLE_CMD,
+				CHARGING_ENABLE_CMD_BIT, 0);
+	if (rc)
+		dev_err(chip->dev, "Cannot stop charging before polling stops: %d\n", rc);
+	return rc;
+}
+
+static int smb_temperature_resume(struct device *dev)
+{
+	struct smb_chip *chip = dev_get_drvdata(dev);
+
+	if (chip->temperature_supply)
+		schedule_delayed_work(&chip->temperature_work, 0);
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(smb_temperature_pm_ops,
+			      smb_temperature_pause, smb_temperature_resume);
+
+static void smb_shutdown(struct platform_device *pdev)
+{
+	smb_temperature_pause(&pdev->dev);
+}
+
+static ssize_t adapter_state_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct smb_chip *chip = dev_get_drvdata(dev);
+	static const unsigned int offsets[] = {
+		APSD_STATUS, APSD_RESULT_STATUS, 0x309, USBIN_OPTIONS_1_CFG,
+		USBIN_CURRENT_LIMIT_CFG, USBIN_ICL_OPTIONS,
+		CMD_ICL_OVERRIDE, USBIN_LOAD_CFG, ADAPTER_ALLOW_OVERRIDE,
+		HVDCP_PULSE_COUNT_MAX,
+	};
+	unsigned int values[ARRAY_SIZE(offsets)];
+	int i, rc;
+
+	for (i = 0; i < ARRAY_SIZE(offsets); i++) {
+		rc = regmap_read(chip->regmap, chip->base + offsets[i], &values[i]);
+		if (rc)
+			return rc;
+	}
+	return sysfs_emit(buf,
+		"apsd=%02x result=%02x qc=%02x options=%02x icl=%02x mode=%02x override=%02x load=%02x allow=%02x maxqc=%02x\n",
+		values[0], values[1], values[2], values[3],
+		values[4], values[5], values[6], values[7], values[8], values[9]);
+}
+static DEVICE_ATTR_RO(adapter_state);
+
+static struct attribute *smb_attrs[] = {
+	&dev_attr_adapter_state.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(smb);
 
 static const struct of_device_id smb_match_id_table[] = {
 	{ .compatible = "qcom,pmi8998-charger", .data = &pmi8998_match_data },
@@ -1185,8 +1506,11 @@ MODULE_DEVICE_TABLE(of, smb_match_id_table);
 
 static struct platform_driver qcom_spmi_smb = {
 	.probe = smb_probe,
+	.shutdown = smb_shutdown,
 	.driver = {
 		.name = "qcom-smbx-charger",
+		.dev_groups = smb_groups,
+		.pm = pm_sleep_ptr(&smb_temperature_pm_ops),
 		.of_match_table = smb_match_id_table,
 		},
 };

@@ -1196,4 +1196,15 @@ config MACSMC_POWER
 
 	  Say Y or M here if you have an Apple Silicon based Mac.
 
+
+config CHARGER_SMB1390_DIAG
+	tristate "Lenovo J706F disabled SMB1390 diagnostics"
+	depends on I2C && OF
+	select REGMAP_I2C
+	select REGMAP_IRQ
+	help
+	  Register and interrupt bring-up for the J706F SMB1390 charge pump.
+	  Keeps both switchers disabled and exposes read-only diagnostic status.
+	  Does not implement charging or change input negotiation/current limits.
+
 endif # POWER_SUPPLY
