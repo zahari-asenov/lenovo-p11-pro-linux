@@ -210,6 +210,59 @@ static int cs35l41_dsp_preload_ev(struct snd_soc_dapm_widget *w,
 	}
 }
 
+/* Lenovo's original 0.18.1 firmware needs the mailbox interrupt handshake. */
+static int j706f_cspl_cmd(struct cs35l41_private *amp,
+                        enum cs35l41_cspl_mbox_cmd cmd)
+{
+ unsigned int status;
+ int ret;
+ if (!amp->dsp.system_name || strcmp(amp->dsp.system_name, "j706f"))
+  return cs35l41_set_cspl_mbox_cmd(amp->dev, amp->regmap, cmd);
+ ret = regmap_write(amp->regmap, CS35L41_IRQ2_STATUS2, BIT(20));
+ if (ret) return ret;
+ ret = regmap_write(amp->regmap, CS35L41_IRQ1_STATUS2, BIT(21));
+ if (ret) return ret;
+ ret = regmap_update_bits(amp->regmap, CS35L41_IRQ2_MASK2, BIT(20), 0);
+ if (ret) return ret;
+ ret = cs35l41_set_cspl_mbox_cmd(amp->dev, amp->regmap, cmd);
+ regmap_read(amp->regmap, CS35L41_IRQ1_STATUS2, &status);
+ regmap_write(amp->regmap, CS35L41_IRQ1_STATUS2, BIT(21));
+ regmap_update_bits(amp->regmap, CS35L41_IRQ2_MASK2, BIT(20), BIT(20));
+ return ret;
+}
+
+static void j706f_resume_worker(struct work_struct *work)
+{
+ struct cs35l41_private *amp = container_of(to_delayed_work(work),
+                  struct cs35l41_private, j706f_resume_work);
+ if (atomic_read(&amp->j706f_playing)) {
+  int ret = j706f_cspl_cmd(amp, CSPL_MBOX_CMD_RESUME);
+  dev_info(amp->dev, "J706F deferred resume: %d\n", ret);
+ }
+}
+static int j706f_trigger(struct snd_pcm_substream *stream, int cmd,
+                         struct snd_soc_dai *dai)
+{
+ struct cs35l41_private *amp = snd_soc_component_get_drvdata(dai->component);
+ if (stream->stream != SNDRV_PCM_STREAM_PLAYBACK) return 0;
+ if (!amp->dsp.system_name || strcmp(amp->dsp.system_name, "j706f")) return 0;
+ switch (cmd) {
+ case SNDRV_PCM_TRIGGER_START:
+ case SNDRV_PCM_TRIGGER_RESUME:
+ case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+  atomic_set(&amp->j706f_playing, 1);
+  mod_delayed_work(system_wq, &amp->j706f_resume_work, msecs_to_jiffies(30));
+  break;
+ case SNDRV_PCM_TRIGGER_STOP:
+ case SNDRV_PCM_TRIGGER_SUSPEND:
+ case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+  atomic_set(&amp->j706f_playing, 0);
+  cancel_delayed_work(&amp->j706f_resume_work);
+  break;
+ }
+ return 0;
+}
+
 static int cs35l41_dsp_audio_ev(struct snd_soc_dapm_widget *w,
 				struct snd_kcontrol *kcontrol, int event)
 {
@@ -240,11 +293,11 @@ static int cs35l41_dsp_audio_ev(struct snd_soc_dapm_widget *w,
 			return -EINVAL;
 		}
 
-		return cs35l41_set_cspl_mbox_cmd(cs35l41->dev, cs35l41->regmap,
-						 CSPL_MBOX_CMD_RESUME);
+		if (cs35l41->dsp.system_name && !strcmp(cs35l41->dsp.system_name, "j706f"))
+   return 0; /* Q6 starts the clock after this DAPM event. */
+  return j706f_cspl_cmd(cs35l41, CSPL_MBOX_CMD_RESUME);
 	case SND_SOC_DAPM_PRE_PMD:
-		return cs35l41_set_cspl_mbox_cmd(cs35l41->dev, cs35l41->regmap,
-						 CSPL_MBOX_CMD_PAUSE);
+		return j706f_cspl_cmd(cs35l41, CSPL_MBOX_CMD_PAUSE);
 	default:
 		return 0;
 	}
@@ -758,7 +811,7 @@ static int cs35l41_pcm_hw_params(struct snd_pcm_substream *substream,
 {
 	struct cs35l41_private *cs35l41 = snd_soc_component_get_drvdata(dai->component);
 	unsigned int rate = params_rate(params);
-	u8 asp_wl;
+	u8 asp_wl, asp_width;
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(cs35l41_fs_rates); i++) {
@@ -772,6 +825,7 @@ static int cs35l41_pcm_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	asp_wl = params_width(params);
+	asp_width = params_physical_width(params);
 
 	regmap_update_bits(cs35l41->regmap, CS35L41_GLOBAL_CLK_CTRL,
 			   CS35L41_GLOBAL_FS_MASK,
@@ -780,14 +834,14 @@ static int cs35l41_pcm_hw_params(struct snd_pcm_substream *substream,
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		regmap_update_bits(cs35l41->regmap, CS35L41_SP_FORMAT,
 				   CS35L41_ASP_WIDTH_RX_MASK,
-				   asp_wl << CS35L41_ASP_WIDTH_RX_SHIFT);
+				   asp_width << CS35L41_ASP_WIDTH_RX_SHIFT);
 		regmap_update_bits(cs35l41->regmap, CS35L41_SP_RX_WL,
 				   CS35L41_ASP_RX_WL_MASK,
 				   asp_wl << CS35L41_ASP_RX_WL_SHIFT);
 	} else {
 		regmap_update_bits(cs35l41->regmap, CS35L41_SP_FORMAT,
 				   CS35L41_ASP_WIDTH_TX_MASK,
-				   asp_wl << CS35L41_ASP_WIDTH_TX_SHIFT);
+				   asp_width << CS35L41_ASP_WIDTH_TX_SHIFT);
 		regmap_update_bits(cs35l41->regmap, CS35L41_SP_TX_WL,
 				   CS35L41_ASP_TX_WL_MASK,
 				   asp_wl << CS35L41_ASP_TX_WL_SHIFT);
@@ -954,6 +1008,7 @@ static void cs35l41_component_remove(struct snd_soc_component *component)
 }
 
 static const struct snd_soc_dai_ops cs35l41_ops = {
+	.trigger = j706f_trigger,
 	.set_fmt = cs35l41_set_dai_fmt,
 	.hw_params = cs35l41_pcm_hw_params,
 	.set_sysclk = cs35l41_dai_set_sysclk,
@@ -1205,6 +1260,9 @@ int cs35l41_probe(struct cs35l41_private *cs35l41, const struct cs35l41_hw_cfg *
 	int irq_pol = 0;
 	int ret;
 
+	INIT_DELAYED_WORK(&cs35l41->j706f_resume_work, j706f_resume_worker);
+	atomic_set(&cs35l41->j706f_playing, 0);
+
 	if (hw_cfg) {
 		cs35l41->hw_cfg = *hw_cfg;
 	} else {
@@ -1375,6 +1433,8 @@ EXPORT_SYMBOL_GPL(cs35l41_probe);
 
 void cs35l41_remove(struct cs35l41_private *cs35l41)
 {
+	atomic_set(&cs35l41->j706f_playing, 0);
+	cancel_delayed_work_sync(&cs35l41->j706f_resume_work);
 	pm_runtime_get_sync(cs35l41->dev);
 	pm_runtime_dont_use_autosuspend(cs35l41->dev);
 	pm_runtime_disable(cs35l41->dev);

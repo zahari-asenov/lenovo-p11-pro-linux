@@ -17,6 +17,8 @@
 #include <sound/cs35l41.h>
 
 #include "wm_adsp.h"
+#include <linux/workqueue.h>
+#include <linux/atomic.h>
 
 #define CS35L41_RX_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE)
 #define CS35L41_TX_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE)
@@ -25,6 +27,8 @@ extern const struct dev_pm_ops cs35l41_pm_ops;
 
 struct cs35l41_private {
 	struct wm_adsp dsp; /* needs to be first member */
+	struct delayed_work j706f_resume_work;
+	atomic_t j706f_playing;
 	struct snd_soc_codec *codec;
 	struct cs35l41_hw_cfg hw_cfg;
 	struct device *dev;
