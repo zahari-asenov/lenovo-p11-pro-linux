@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#include "sm7150-lenovo-j706f-daily.dts"
+#include <dt-bindings/sound/qcom,q6afe.h>
+/ {
+ speaker_vbat: speaker-vbat { compatible = "regulator-fixed"; regulator-name = "speaker-vbat"; regulator-min-microvolt = <3700000>; regulator-max-microvolt = <3700000>; regulator-always-on; };
+ sound {
+  compatible = "lenovo,j706f-audio";
+  model = "Lenovo-J706F";
+  pinctrl-names = "default"; pinctrl-0 = <&speaker_i2s>;
+  audio-routing = "Speaker1", "SPK1 SPK", "Speaker2", "SPK2 SPK", "Speaker3", "SPK3 SPK", "Speaker4", "SPK4 SPK";
+  widgets = "Speaker", "Speaker1", "Speaker", "Speaker2", "Speaker", "Speaker3", "Speaker", "Speaker4";
+  dai-link-0 { link-name = "MultiMedia1"; cpu { sound-dai = <&q6asmdai 0>; }; };
+  dai-link-1 {
+   link-name = "TERT_MI2S_RX";
+   cpu { sound-dai = <&q6afedai TERTIARY_MI2S_RX>; };
+   platform { sound-dai = <&q6routing>; };
+   codec { sound-dai = <&speaker1 0>, <&speaker2 0>, <&speaker3 0>, <&speaker4 0>; };
+  };
+  dai-link-3 { link-name = "MultiMedia2"; cpu { sound-dai = <&q6asmdai 1>; }; };
+  /* Diagnostic return path: only SPK2 may drive the shared serial output. */
+  dai-link-2 {
+   link-name = "TERT_MI2S_TX";
+   cpu { sound-dai = <&q6afedai TERTIARY_MI2S_TX>; };
+   platform { sound-dai = <&q6routing>; };
+   codec { sound-dai = <&speaker2 0>; };
+  };
+ };
+};
+&remoteproc_adsp { firmware-name = "qcom/j706f/adsp.mdt"; status = "okay"; };
+&q6afedai { dai@20 { reg = <TERTIARY_MI2S_RX>; qcom,sd-lines = <0>; }; dai@21 { reg = <TERTIARY_MI2S_TX>; qcom,sd-lines = <1>; }; };
+&q6asmdai { dai@0 { reg = <0>; }; dai@1 { reg = <1>; }; };
+&pm6150_rtc { status = "okay"; };
+&tlmm {
+ speaker_i2s: speaker-i2s-state { pins = "gpio53", "gpio54", "gpio55", "gpio56"; function = "ter_mi2s"; drive-strength = <8>; bias-disable; };
+ speaker_reset: speaker-reset-state { pins = "gpio37"; function = "gpio"; drive-strength = <2>; bias-pull-up; };
+ speaker_irq1: speaker-irq1-state { pins = "gpio26"; function = "gpio"; drive-strength = <2>; bias-disable; input-enable; };
+ speaker_irq2: speaker-irq2-state { pins = "gpio68"; function = "gpio"; drive-strength = <2>; bias-disable; input-enable; };
+ speaker_irq3: speaker-irq3-state { pins = "gpio24"; function = "gpio"; drive-strength = <2>; bias-disable; input-enable; };
+ speaker_irq4: speaker-irq4-state { pins = "gpio30"; function = "gpio"; drive-strength = <2>; bias-disable; input-enable; };
+};
+&i2c1 { status = "okay"; clock-frequency = <400000>;
+ speaker1: amplifier@40 {
+ compatible = "cirrus,cs35l41"; reg = <0x40>; #sound-dai-cells = <1>;
+ sound-name-prefix = "SPK1"; cirrus,subsystem-id = "j706f";
+ VA-supply = <&vreg_l10a>; VP-supply = <&speaker_vbat>;
+ reset-gpios = <&tlmm 37 GPIO_ACTIVE_HIGH>;
+ interrupt-parent = <&tlmm>; interrupts = <26 IRQ_TYPE_LEVEL_LOW>;
+ pinctrl-names = "default"; pinctrl-0 = <&speaker_irq1 &speaker_reset>;
+ cirrus,boost-peak-milliamp = <3000>; cirrus,boost-ind-nanohenry = <1000>; cirrus,boost-cap-microfarad = <15>;
+ cirrus,asp-sdout-hiz = <3>;
+ cirrus,gpio2-output-enable; cirrus,gpio2-src-select = <4>;
+ };
+ speaker2: amplifier@41 {
+ compatible = "cirrus,cs35l41"; reg = <0x41>; #sound-dai-cells = <1>;
+ sound-name-prefix = "SPK2"; cirrus,subsystem-id = "j706f";
+ VA-supply = <&vreg_l10a>; VP-supply = <&speaker_vbat>;
+ reset-gpios = <&tlmm 37 GPIO_ACTIVE_HIGH>;
+ interrupt-parent = <&tlmm>; interrupts = <68 IRQ_TYPE_LEVEL_LOW>;
+ pinctrl-names = "default"; pinctrl-0 = <&speaker_irq2>;
+ cirrus,boost-peak-milliamp = <3000>; cirrus,boost-ind-nanohenry = <1000>; cirrus,boost-cap-microfarad = <15>;
+ cirrus,asp-sdout-hiz = <3>;
+ cirrus,gpio2-output-enable; cirrus,gpio2-src-select = <4>;
+ };
+ speaker3: amplifier@42 {
+ compatible = "cirrus,cs35l41"; reg = <0x42>; #sound-dai-cells = <1>;
+ sound-name-prefix = "SPK3"; cirrus,subsystem-id = "j706f";
+ VA-supply = <&vreg_l10a>; VP-supply = <&speaker_vbat>;
+ reset-gpios = <&tlmm 37 GPIO_ACTIVE_HIGH>;
+ interrupt-parent = <&tlmm>; interrupts = <24 IRQ_TYPE_LEVEL_LOW>;
+ pinctrl-names = "default"; pinctrl-0 = <&speaker_irq3>;
+ cirrus,boost-peak-milliamp = <3000>; cirrus,boost-ind-nanohenry = <1000>; cirrus,boost-cap-microfarad = <15>;
+ cirrus,asp-sdout-hiz = <3>;
+ cirrus,gpio2-output-enable; cirrus,gpio2-src-select = <4>;
+ };
+ speaker4: amplifier@43 {
+ compatible = "cirrus,cs35l41"; reg = <0x43>; #sound-dai-cells = <1>;
+ sound-name-prefix = "SPK4"; cirrus,subsystem-id = "j706f";
+ VA-supply = <&vreg_l10a>; VP-supply = <&speaker_vbat>;
+ reset-gpios = <&tlmm 37 GPIO_ACTIVE_HIGH>;
+ interrupt-parent = <&tlmm>; interrupts = <30 IRQ_TYPE_LEVEL_LOW>;
+ pinctrl-names = "default"; pinctrl-0 = <&speaker_irq4>;
+ cirrus,boost-peak-milliamp = <3000>; cirrus,boost-ind-nanohenry = <1000>; cirrus,boost-cap-microfarad = <15>;
+ cirrus,asp-sdout-hiz = <3>;
+ cirrus,gpio2-output-enable; cirrus,gpio2-src-select = <4>;
+ };
+};
+
+/* PM6150 limits checked against the stock charger configuration. */
+/ {
+ main_battery: battery-limits {
+  compatible = "simple-battery";
+  voltage-max-design-microvolt = <4400000>;
+  constant-charge-current-max-microamp = <1950000>;
+ };
+};
+&pm6150_charger { lenovo,qc-detect-5v; lenovo,battery-temperature-supply = <&battery_gauge>; monitored-battery = <&main_battery>; status = "okay"; };
+
+/* Lenovo stock PON type1 maps to KEY_VOLUMEDOWN (114). */
+&pm6150_resin { linux,code = <KEY_VOLUMEDOWN>; status = "okay"; };
+
+/* Both halves receive identical panel commands, triggered by DSI1. */
+&mdss_dsi0 { qcom,sync-dual-dsi; };
+&mdss_dsi1 { qcom,sync-dual-dsi; };
+
+/* Stock SMB1390 master only; diagnostic driver never enables its switcher. */
+&pm6150_gpios {
+ smb1390_irq_default: smb1390-irq-default-state {
+  pins = "gpio3";
+  function = "normal";
+  power-source = <0>;
+  qcom,pull-up-strength = <0>;
+  bias-pull-up;
+  input-enable;
+ };
+};
+&i2c9 {
+ charge-pump@10 {
+  compatible = "lenovo,j706f-smb1390-diag";
+  reg = <0x10>;
+  pinctrl-names = "default";
+  pinctrl-0 = <&smb1390_irq_default>;
+  interrupt-parent = <&pm6150_gpios>;
+  interrupts = <3 IRQ_TYPE_LEVEL_LOW>;
+ };
+};

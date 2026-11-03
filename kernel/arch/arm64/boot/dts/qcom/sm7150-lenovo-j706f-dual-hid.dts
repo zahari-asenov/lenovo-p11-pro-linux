@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#include "sm7150-lenovo-j706f-keyboard-v2.dts"
+
+&tlmm {
+	touchpad_irq_default: touchpad-irq-default-state {
+		pins = "gpio4";
+		function = "gpio";
+		input-enable;
+		bias-disable;
+	};
+};
+&qupv3_id_0 { status = "okay"; };
+&gpi_dma0 { status = "okay"; };
+&i2c2 {
+	status = "okay";
+	clock-frequency = <400000>;
+	touchpad@60 {
+		compatible = "hid-over-i2c";
+		reg = <0x60>;
+		hid-descr-addr = <1>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <4 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&touchpad_irq_default>;
+		vdd-supply = <&vreg_l16a>;
+		post-power-on-delay-ms = <100>;
+	};
+};

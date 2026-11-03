@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#include "sm7150-lenovo-j706f-gpu.dts"
+&i2c9 {
+ status = "okay";
+ battery_gauge: battery@55 { compatible = "ti,bq27541"; reg = <0x55>; };
+};

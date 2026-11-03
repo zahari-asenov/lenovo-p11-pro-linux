@@ -1,0 +1,184 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* TB-J706F diagnostic bring-up; derived from AVB-matched stock base12/overlay4.
+ * Unbooted. Stock bootloader DTBO application remains an unresolved boot gate.
+ */
+/dts-v1/;
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/linux-event-codes.h>
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include "sm7150.dtsi"
+#include "pm6150.dtsi"
+#include "pm6150l.dtsi"
+
+/ {
+	model = "Lenovo Tab P11 Pro TB-J706F (diagnostic)";
+	compatible = "lenovo,j706f", "qcom,sm7150";
+	chassis-type = "tablet";
+	/* Selection metadata from stock: SM7150P and board 34/revision 0. */
+	qcom,msm-id = <366 0>;
+	qcom,board-id = <34 0>;
+
+	chosen {
+		/* Keep boot-time rails/clocks for initial diagnostics. */
+		bootargs = "rdinit=/init loglevel=8 ignore_loglevel keep_bootcon clk_ignore_unused pd_ignore_unused regulator_ignore_unused";
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+		key-volume-up {
+			label = "Volume Up";
+			gpios = <&pm6150l_gpios 2 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <15>;
+		};
+	};
+
+	reserved-memory {
+		/* Union of stock splash/ramdump area, excluding existing dfps range. */
+		diagnostic_display_mem: display@9c000000 {
+			reg = <0 0x9c000000 0 0x1700000>;
+			no-map;
+		};
+		/* Preserve stock crash-log storage without mounting/writing it. */
+		diagnostic_pstore_mem: firmware-log@fff00000 {
+			reg = <0 0xfff00000 0 0x100000>;
+			no-map;
+		};
+	};
+};
+
+&apps_rsc {
+	regulators {
+		compatible = "qcom,pm6150-rpmh-regulators";
+		qcom,pmic-id = "a";
+		/* Only verified USB supplies; do not invent board cascade wiring. */
+		vreg_l4a: ldo4 {
+			regulator-name = "pm6150_l4";
+			regulator-min-microvolt = <824000>;
+			regulator-max-microvolt = <920000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+		vreg_l11a: ldo11 {
+			regulator-name = "pm6150_l11";
+			regulator-min-microvolt = <1696000>;
+			regulator-max-microvolt = <1984000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+		vreg_l17a: ldo17 {
+			regulator-name = "pm6150_l17";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3232000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+&usb_1 { status = "okay"; };
+&usb_1_dwc3 {
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	phys = <&usb_1_hsphy>;
+	phy-names = "usb2-phy";
+};
+&usb_1_hsphy {
+	vdd-supply = <&vreg_l4a>;
+	vdda-pll-supply = <&vreg_l11a>;
+	vdda-phy-dpdm-supply = <&vreg_l17a>;
+	status = "okay";
+};
+&usb_1_qmpphy { status = "disabled"; };
+&ufs_mem_hc { status = "disabled"; };
+&gpu { status = "disabled"; };
+&gmu { status = "disabled"; };
+&mdss { status = "disabled"; };
+&wifi { status = "disabled"; };
+&remoteproc_adsp { status = "disabled"; };
+&remoteproc_cdsp { status = "disabled"; };
+&remoteproc_mpss { status = "disabled"; };
+
+/* Display bring-up: wiring/voltages from the selected stock RM692E6 panel. */
+&tlmm {
+	gpio-reserved-ranges = <59 4>;
+	j706f_te: j706f-te-state {
+		pins = "gpio10";
+		function = "mdp_vsync";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+};
+
+&pm6150l_gpios {
+	j706f_panel_reset: panel-reset-state {
+		pins = "gpio9";
+		function = "normal";
+		power-source = <1>;
+		bias-disable;
+		output-low;
+	};
+};
+
+&apps_rsc {
+	regulators {
+		vreg_l13a: ldo13 {
+			regulator-name = "pm6150_l13";
+			regulator-min-microvolt = <1900000>;
+			regulator-max-microvolt = <1904000>; /* first representable step >= stock 1.9V */
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+		vreg_l18a: ldo18 {
+			regulator-name = "pm6150_l18";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+	regulators-c {
+		compatible = "qcom,pm6150l-rpmh-regulators";
+		qcom,pmic-id = "c";
+		vreg_l3c: ldo3 {
+			regulator-name = "pm6150l_l3";
+			regulator-min-microvolt = <1144000>;
+			regulator-max-microvolt = <1256000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+&mdss { status = "okay"; };
+&mdss_dsi0 {
+	status = "okay";
+	vdda-supply = <&vreg_l3c>;
+	qcom,dual-dsi-mode;
+	qcom,master-dsi;
+	panel@0 {
+		compatible = "lenovo,j706f-edo-rm692e6";
+		reg = <0>;
+		vddio-supply = <&vreg_l13a>;
+		avdd-supply = <&vreg_l18a>;
+		reset-gpios = <&pm6150l_gpios 9 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&j706f_panel_reset &j706f_te>;
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			port@0 {
+				reg = <0>;
+				j706f_panel_in0: endpoint { remote-endpoint = <&mdss_dsi0_out>; };
+			};
+			port@1 {
+				reg = <1>;
+				j706f_panel_in1: endpoint { remote-endpoint = <&mdss_dsi1_out>; };
+			};
+		};
+	};
+};
+&mdss_dsi0_out { remote-endpoint = <&j706f_panel_in0>; data-lanes = <0 1 2 3>; };
+&mdss_dsi0_phy { status = "okay"; vdds-supply = <&vreg_l4a>; };
+&mdss_dsi1 {
+	status = "okay";
+	vdda-supply = <&vreg_l3c>;
+	qcom,dual-dsi-mode;
+	assigned-clock-parents = <&mdss_dsi0_phy 0>, <&mdss_dsi0_phy 1>;
+};
+&mdss_dsi1_out { remote-endpoint = <&j706f_panel_in1>; data-lanes = <0 1 2 3>; };
+&mdss_dsi1_phy { status = "okay"; vdds-supply = <&vreg_l4a>; };

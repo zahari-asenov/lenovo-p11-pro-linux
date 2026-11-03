@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#include "sm7150-lenovo-j706f-dual-hid.dts"
+
+&apps_rsc {
+	regulators-c {
+		vreg_l8c: ldo8 {
+			regulator-name = "pm6150l_l8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1900000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			/* Stock hall sensor supply; keep physical lid sensing powered. */
+			regulator-boot-on;
+			regulator-always-on;
+		};
+	};
+};
+&tlmm {
+	hall_irq_default: hall-irq-default-state {
+		pins = "gpio93";
+		function = "gpio";
+		input-enable;
+		bias-disable;
+	};
+};
+/ {
+	gpio-keys {
+		lid-switch {
+			label = "Lid Switch";
+			gpios = <&tlmm 93 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&hall_irq_default>;
+			debounce-interval = <15>;
+		};
+	};
+};

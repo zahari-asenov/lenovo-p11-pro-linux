@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#include "sm7150-lenovo-j706f-connectivity.dts"
+&gpu {
+ status = "okay";
+ zap-shader { firmware-name = "qcom/j706f/a615_zap.mbn"; };
+};
+&gmu { status = "okay"; };

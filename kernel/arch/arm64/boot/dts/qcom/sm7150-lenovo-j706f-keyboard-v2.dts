@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Keyboard-only addition to the proven display-v3 board. */
+#include "sm7150-lenovo-j706f-diagnostic.dts"
+#include <dt-bindings/interrupt-controller/irq.h>
+
+&apps_rsc {
+	regulators {
+		vreg_l16a: ldo16 {
+			regulator-name = "pm6150_l16";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+&tlmm {
+	keyboard_irq_default: keyboard-irq-default-state {
+		pins = "gpio5";
+		function = "gpio";
+		input-enable;
+		bias-disable;
+	};
+};
+
+&qupv3_id_1 { status = "okay"; };
+&gpi_dma1 { status = "okay"; };
+&i2c9 {
+	status = "okay";
+	clock-frequency = <400000>;
+	keyboard@61 {
+		compatible = "hid-over-i2c";
+		reg = <0x61>;
+		hid-descr-addr = <1>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <5 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&keyboard_irq_default>;
+		vdd-supply = <&vreg_l16a>;
+		post-power-on-delay-ms = <100>;
+	};
+};
