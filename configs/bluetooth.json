@@ -1,0 +1,4 @@
+{
+  "local_bd_address_le": null,
+  "description": "Optional per-device Bluetooth identity: six hexadecimal bytes in little-endian order. Configure only in ignored local/bluetooth.json or J706F_CONFIG_DIR. Null removes any previous local override from the generated DTB."
+}

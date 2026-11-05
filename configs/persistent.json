@@ -1,0 +1,29 @@
+{
+  "status": "DEVICE_CONFIGURATION_REQUIRED",
+  "serial": "CONFIGURE_DEVICE_SERIAL",
+  "partuuid": "00000000-0000-0000-0000-000000000000",
+  "partname": "userdata",
+  "bytes": 110004875264,
+  "sectors_512": 214853272,
+  "boot_partition": "boot_a",
+  "boot_partuuid": "00000000-0000-0000-0000-000000000000",
+  "boot_bytes": 67108864,
+  "root_id": "CONFIGURE_EXISTING_ROOT_MARKER",
+  "base_archive": "rootfs-gnome-v8.ext4.gz",
+  "base_sha256": "e88f0091308bf1b01d33d1ad3d06230a6488615054815237a170a1d857977727",
+  "private_state": "CONFIGURE_PRIVATE_STATE_PATH",
+  "preserve_partitions": [
+    "GPT",
+    "boot_b",
+    "dtbo_b",
+    "super",
+    "metadata",
+    "persist",
+    "modemst1",
+    "modemst2",
+    "fsg",
+    "fsc",
+    "all bootloader and signed firmware partitions"
+  ],
+  "data_impact": "Example only. Configure an existing installation; this project does not provide a general installer."
+}

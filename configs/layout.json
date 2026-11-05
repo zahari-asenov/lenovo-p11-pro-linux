@@ -1,0 +1,28 @@
+{
+  "archive": null,
+  "build": "../j706f-build",
+  "kernel_source": "kernel",
+  "upstream_commit": "fd78d17954a86ea6ceb0c535e618ea129e09f8dd",
+  "source_archive_sha256": "ce48916472a6a656557dec5ea37a9d08c64ba3c0dcaae097f52c21ce8f895999",
+  "compatibility_links": [],
+  "no_tablet_commands": true,
+  "migration_images": [
+    {
+      "name": "known-good.img",
+      "legacy_version": 7,
+      "sha256": "248931ec964dc0326b30648d07cf769614cb9073185d67ddf76bdf8b6f3af6c0",
+      "status": "Booted GNOME, touch and Wi-Fi; brightness and speakers still unresolved"
+    },
+    {
+      "name": "current-test.img",
+      "legacy_version": 10,
+      "sha256": "bb545ec3639dd0b0228c642440f2bdbcc9afe32879829c3e92091ee27291032c",
+      "status": "Latest synchronized HS brightness candidate; last boot not confirmed, not known good"
+    }
+  ],
+  "current_artifact_manifests": "Read adjacent JSON manifests under $J706F_BUILD_ROOT/artifacts.",
+  "project": ".",
+  "legacy_compatibility_root": null,
+  "archive_env": "J706F_ARCHIVE_ROOT",
+  "archive_note": "Optional private research archive, not included in the public source."
+}

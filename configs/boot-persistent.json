@@ -1,0 +1,5 @@
+{
+  "cmdline": "rdinit=/init loglevel=8 ignore_loglevel keep_bootcon clk_ignore_unused pd_ignore_unused regulator_ignore_unused initcall_debug panic=0 j706f_diag=persistent-root ramoops.mem_address=0xfff00000 ramoops.mem_size=0x100000 ramoops.record_size=0x20000 ramoops.console_size=0x40000 ramoops.ftrace_size=0 ramoops.pmsg_size=0 ramoops.ecc=0 ramoops.mem_type=0 cpuidle.off=1 console=tty0 drm.debug=0 root=PARTUUID=00000000-0000-0000-0000-000000000000 rw mem_sleep_default=s2idle systemd.gpt_auto=no systemd.log_target=kmsg systemd.show_status=yes",
+  "serial": "CONFIGURE_DEVICE_SERIAL",
+  "root_archive": "private:persistent/rootfs.ext4"
+}
