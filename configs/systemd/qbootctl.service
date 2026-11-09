@@ -1,0 +1,12 @@
+[Unit]
+Description=Mark successful Lenovo Linux boot through Qualcomm boot control
+Wants=j706f-radio.service
+After=local-fs.target systemd-udev-trigger.service j706f-radio.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/j706f-mark-boot-successful
+
+[Install]
+WantedBy=multi-user.target

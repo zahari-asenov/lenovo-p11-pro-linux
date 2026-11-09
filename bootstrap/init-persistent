@@ -1,0 +1,130 @@
+#!/bin/sh
+# Persistent-root candidate. Never formats storage or chooses an alternate root.
+export PATH=/bin:/sbin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /run /tmp /sys/kernel/config
+mount -t devpts devpts /dev/pts
+mount -t tmpfs -o mode=0755,size=80% tmpfs /run
+mount -t tmpfs -o mode=1777 tmpfs /tmp
+exec </dev/null >/run/init.log 2>&1
+hostname j706f-diag
+say() { echo "j706f-diag: $*"; echo "j706f-diag: $*" >/dev/kmsg; }
+say 'J706F_PERSISTENT_V1 init reached'
+mkdir -p /run/www
+echo J706F_MAINLINE_PSTORE_V1 >/run/www/mainline-id.txt
+cat /proc/sys/kernel/random/boot_id >/run/www/boot-id.txt
+uname -a >/run/www/uname.txt
+cat /proc/cmdline >/run/www/cmdline.txt
+cat /proc/meminfo >/run/www/meminfo.txt
+printf '%s\n' 'J706F persistent-root diagnostic' 'Kernel logs: /dmesg.txt' 'Init logs: /init.txt' >/run/www/index.html
+mount -t configfs none /sys/kernel/config
+G=/sys/kernel/config/usb_gadget/j706f
+if ! mkdir -p "$G"; then
+    say 'configfs unavailable; continuing local root selection'
+fi
+# Linux Foundation composite gadget identity; local development only.
+echo 0x1d6b >"$G/idVendor"
+echo 0x0104 >"$G/idProduct"
+echo 0x0200 >"$G/bcdUSB"
+mkdir -p "$G/strings/0x409"
+echo j706f-diagnostic >"$G/strings/0x409/serialnumber"
+echo 'Local Linux diagnostic' >"$G/strings/0x409/manufacturer"
+echo 'TB-J706F ACM and ECM' >"$G/strings/0x409/product"
+mkdir -p "$G/configs/c.1/strings/0x409"
+echo 'Serial and Ethernet diagnostics' >"$G/configs/c.1/strings/0x409/configuration"
+echo 100 >"$G/configs/c.1/MaxPower"
+mkdir -p "$G/functions/acm.usb0" "$G/functions/ecm.usb0"
+echo 02:70:6f:00:00:01 >"$G/functions/ecm.usb0/dev_addr"
+echo 02:70:6f:00:00:02 >"$G/functions/ecm.usb0/host_addr"
+ln -s "$G/functions/acm.usb0" "$G/configs/c.1/acm.usb0"
+ln -s "$G/functions/ecm.usb0" "$G/configs/c.1/ecm.usb0"
+say 'Waiting for USB device controller'
+tries=0
+while :; do
+    UDC=
+    for candidate in /sys/class/udc/*; do
+        [ -e "$candidate" ] || continue
+        UDC=${candidate##*/}
+        break
+    done
+    [ -n "$UDC" ] && break
+    tries=$((tries + 1))
+    [ "$tries" -lt 15 ] || break
+    dmesg >/run/www/dmesg.txt
+    sleep 2
+done
+if [ -n "$UDC" ] && echo "$UDC" >"$G/UDC"; then say "Bound gadget to $UDC"; else say 'UDC bind failed'; fi
+ifconfig lo 127.0.0.1 up
+ifconfig usb0 172.16.42.1 netmask 255.255.255.0 up
+# No network shell. HTTP exposes diagnostic text held in RAM.
+httpd -p 80 -h /run/www
+/bin/rescue-control >/run/control.log 2>&1 &
+B=/bin/busybox-ui
+fail() {
+ say "PERSISTENT ROOT STOPPED: $*"
+ dmesg >/run/www/dmesg.txt
+ # Keep USB diagnostics and the existing explicit bootloader helper available.
+ # Never fall back to Android or reboot automatically.
+ while :; do sleep 60; done
+}
+. /etc/j706f-root.conf
+serial=
+for arg in $(cat /proc/cmdline); do
+ case "$arg" in androidboot.serialno=*) serial=${arg#*=};; esac
+done
+[ "$serial" = "$J706F_SERIAL" ] || fail 'device serial mismatch'
+rootdev=
+tries=0
+while [ "$tries" -lt 60 ]; do
+ for part in /sys/class/block/sd*; do
+  [ -f "$part/partition" ] || continue
+  uuid=; name=
+  while IFS='=' read -r key value; do
+   case "$key" in PARTUUID) uuid=$value;; PARTNAME) name=$value;; esac
+  done < "$part/uevent"
+  [ "$uuid" = "$J706F_PARTUUID" ] || continue
+  [ "$name" = userdata ] || fail 'root partition name mismatch'
+  [ -z "$rootdev" ] || fail 'duplicate root partition UUID'
+  [ "$(cat "$part/size")" = "$J706F_SECTORS" ] || fail 'root size mismatch'
+  rootdev=/dev/${part##*/}
+ done
+ [ -n "$rootdev" ] && break
+ tries=$((tries + 1)); sleep 1
+done
+[ -b "$rootdev" ] || fail 'root partition missing'
+# Protect all other partitions. The root disk itself must remain writable;
+# privileged raw whole-disk writes are not prevented by per-partition RO flags.
+rootname=${rootdev##*/}
+parent=$($B basename "$($B readlink -f "/sys/class/block/$rootname/..")")
+for disk in /sys/class/block/sd*; do
+ [ -f "$disk/partition" ] && continue
+ [ -e "$disk/dev" ] || continue
+ if [ "${disk##*/}" = "$parent" ]; then
+  for part in "$disk"/*; do
+   [ -f "$part/partition" ] || continue
+   [ "${part##*/}" = "$rootname" ] && continue
+   $B blockdev --setro "/dev/${part##*/}" || fail 'partition protection failed'
+  done
+ else
+  $B blockdev --setro "/dev/${disk##*/}" || fail 'disk protection failed'
+ fi
+done
+$B blkid "$rootdev" | $B grep -q 'TYPE="ext4"' || fail 'root is not ext4'
+mkdir -p /newroot
+# Inspect marker without journal replay before allowing writes.
+mount -t ext4 -o ro,noload "$rootdev" /newroot || fail 'read-only root mount failed'
+[ "$(cat /newroot/etc/j706f-root-id 2>/dev/null)" = "$J706F_ROOT_ID" ] || fail 'root marker mismatch'
+[ -x /newroot/sbin/init ] || fail 'systemd init missing'
+umount /newroot || fail 'root unmount failed'
+case " $(cat /proc/cmdline) " in
+ *' j706f_root_probe=1 '*) fail 'read-only root probe passed; normal boot intentionally skipped';;
+esac
+echo "$rootdev" >/run/j706f-root-device
+mount -t ext4 -o rw "$rootdev" /newroot || fail 'writable root mount failed'
+for p in dev proc sys run; do
+ mkdir -p "/newroot/$p"
+ mount --move "/$p" "/newroot/$p" || fail "move $p failed"
+done
+exec /bin/busybox-ui switch_root /newroot /sbin/init
