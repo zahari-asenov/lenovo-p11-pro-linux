@@ -1,0 +1,5 @@
+# Hide tablet firmware/calibration partitions from desktop volume lists.
+# Match the internal UFS controller, so removable USB/SD storage is unaffected.
+SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", KERNELS=="1d84000.ufshc", ENV{UDISKS_IGNORE}="1"
+# Expose the Linux data filesystem reclaimed from the former Android super.
+SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", KERNELS=="1d84000.ufshc", ENV{ID_FS_LABEL}=="Linux-Storage", ENV{ID_FS_TYPE}=="ext4", ENV{UDISKS_IGNORE}="0", ENV{UDISKS_NAME}="Storage", ENV{UDISKS_AUTO}="0"

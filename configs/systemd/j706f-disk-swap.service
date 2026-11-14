@@ -1,0 +1,14 @@
+[Unit]
+Description=J706F disk swap fallback on Linux storage
+Requires=j706f-storage.service
+After=j706f-storage.service
+ConditionPathExists=/srv/storage/swap/j706f
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/swapon --priority 10 /srv/storage/swap/j706f
+ExecStop=/usr/sbin/swapoff /srv/storage/swap/j706f
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

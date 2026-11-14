@@ -1,0 +1,11 @@
+[Unit]
+Description=J706F compressed memory swap
+After=systemd-udev-trigger.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /usr/local/libexec/j706f-start-memory-swap
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

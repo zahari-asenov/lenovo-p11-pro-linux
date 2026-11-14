@@ -1,0 +1,13 @@
+[Unit]
+Description=Additional Linux storage on former Android system partition
+Wants=j706f-radio.service qbootctl.service
+After=local-fs.target j706f-radio.service qbootctl.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/j706f-mount-storage
+ExecStop=/bin/umount /srv/storage
+
+[Install]
+WantedBy=multi-user.target
