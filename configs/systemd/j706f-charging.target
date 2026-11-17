@@ -1,0 +1,5 @@
+[Unit]
+Description=J706F charging without the desktop
+Requires=multi-user.target j706f-charging.service
+After=multi-user.target
+AllowIsolate=yes

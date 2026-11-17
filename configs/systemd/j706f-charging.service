@@ -1,0 +1,10 @@
+[Unit]
+Description=J706F charging screen and power button
+After=multi-user.target
+Conflicts=getty@tty1.service
+OnFailure=graphical.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/j706f-charging-mode
+Restart=no
