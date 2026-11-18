@@ -1,0 +1,9 @@
+{
+  "uuid": "j706f-touch-gestures@local",
+  "name": "J706F Touch Gestures",
+  "description": "Keep the hidden GNOME 48 emoji pager from intercepting touchscreen workspace swipes.",
+  "shell-version": [
+    "48"
+  ],
+  "version": 1
+}
