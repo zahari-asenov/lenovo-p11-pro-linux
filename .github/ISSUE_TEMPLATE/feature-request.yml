@@ -1,0 +1,20 @@
+name: Feature request
+description: Propose an improvement or a device capability to investigate.
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Desired behavior
+      description: What should work, and which workflow does it improve?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and possible approach
+      description: Link relevant sources and distinguish observations from hypotheses.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: How to verify it
+      description: Describe an observable success criterion and recovery considerations.

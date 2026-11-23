@@ -1,0 +1,36 @@
+name: Bug report
+description: Report a reproducible problem with this experimental J706F port.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep passwords, SSH keys, Wi-Fi credentials, device serials and personal data out of reports.
+        Remove those values from logs before attaching them. Do not reproduce a dangerous display,
+        charging or storage fault solely to collect logs. Source/build checks and device observations
+        are separate evidence; report what you actually tested.
+  - type: input
+    id: source
+    attributes:
+      label: Source revision and image
+      description: Git commit, local changes, image hash if known, and whether RAM-booted or installed.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed and expected behavior
+      description: Describe the device model, symptom and relevant operating conditions.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction and recovery
+      description: Steps already performed, frequency, last working revision and how the device recovered.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Relevant errors, host-check output, and user-visible observations. No credentials or serials.
