@@ -1,0 +1,37 @@
+name: ARM64 compile check (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel-and-dtb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      J706F_BUILD_ROOT: ${{ github.workspace }}/../j706f-build
+      J706F_TOOLCHAIN_MODE: system
+      J706F_JOBS: "2"
+    steps:
+      # Official actions/checkout v4.2.2, verified against its Git tag.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install distribution cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            bc bison build-essential device-tree-compiler flex gcc-aarch64-linux-gnu \
+            libelf-dev libssl-dev pkgconf python3
+      - name: Adapt board configuration to the distribution compiler
+        run: scripts/build.sh olddefconfig
+      - name: Compile ARM64 kernel and J706F device tree
+        run: scripts/build.sh
+      - name: Record compile-only result
+        run: |
+          sha256sum \
+            "$J706F_BUILD_ROOT/kernel/arch/arm64/boot/Image.gz" \
+            "$J706F_BUILD_ROOT/kernel/arch/arm64/boot/dts/qcom/sm7150-lenovo-j706f-power.dtb"
+          echo 'Compile check only: no boot image packaged or device boot performed.'

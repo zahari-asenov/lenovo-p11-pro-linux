@@ -1,0 +1,33 @@
+name: Offline host checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: host-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      J706F_BUILD_ROOT: ${{ github.workspace }}/../j706f-build
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      # Official actions/checkout v4.2.2, verified against its Git tag.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install distribution host-check dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential device-tree-compiler python3 python3-gi python3-yaml gsettings-desktop-schemas
+      - name: Check project sources, safety tests and synthetic packaging
+        run: /usr/bin/python3 scripts/check-project.py
