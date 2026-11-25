@@ -1,0 +1,25 @@
+{
+  "date": "2026-11-25",
+  "status": "REFERENCE_DEVICE_ACCEPTED",
+  "source_commit": "8cdabbe6e0bed917496a32bee36135ac998833e0",
+  "image_sha256": "f67510b2a24e60339f9be31a5920c7c8d127f9b71ea42b7a5e337349a3d8b7e6",
+  "boot_partition_padded_sha256": "6689df31656993aa935b7e8352946f57f56b3646721b8c60a27413a0eeacf2a6",
+  "payload_sha256": {
+    "kernel": "3a7c3e689fcb1572e46fa1c62127b9f2f72159f18621c261617c7192acbbf5db",
+    "ramdisk": "6e3858cf2fb4c0423950577f9b7e1364821d5a4ec72d6534b6f5ccd25f068e07",
+    "dtb": "d1e58409f956a084a9e445baa86a7819986c33384b49b5111271f5b427ee014e"
+  },
+  "kernel_config_sha256": "4d1d3002fcfd64bafae9f27841c632328527985a7ce744d2d48b519203ff513b",
+  "kernel_build": 66,
+  "normal_startup_verified_slot": "a",
+  "both_boot_partition_full_readbacks_verified": true,
+  "separate_slot_b_startup_tested_this_update": false,
+  "accepted": [
+    "Normal persistent Linux startup",
+    "Smooth brightness adjustment after avoiding live shared-PLL retuning",
+    "Visible approximately 10\u2013100 percent active brightness range"
+  ],
+  "scope": "Reference TB-J706F only; active DSI0 command-master option retained; not a general installer or physical-luminance calibration.",
+  "artifacts_distributed": false,
+  "private_root_image_distributed": false
+}
